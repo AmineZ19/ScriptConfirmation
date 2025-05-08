@@ -1,0 +1,47 @@
+function onEdit(e) {
+  if (!e || !e.range) return;
+
+  var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = e.source.getActiveSheet();
+  var sheetName = sheet.getName();
+
+  if (sheetName !== "Suivie" && sheetName !== "WaxSuivie") return;
+
+  var destinationSheet = spreadsheet.getSheetByName("Zr Sheet");
+
+  var range = e.range;
+  var row = range.getRow();
+  var col = range.getColumn();
+
+  if (col === 20 && range.getValue() === "Export ZR") {
+    var confirmValue = sheet.getRange(row, 16).getValue(); // Colonne P (16)
+
+    if (confirmValue === "CONFIRMER") {
+      var referenceValue = sheet.getRange(row, 2).getValue(); // Colonne B (2)
+
+      var existingValues = destinationSheet.getRange("T:T").getValues();
+      var alreadyExists = existingValues.some(function(value) {
+        return value[0] === referenceValue;
+      });
+
+      if (!alreadyExists) {
+        var firstEmptyRow = destinationSheet.getLastRow() + 1;
+
+        destinationSheet.getRange(firstEmptyRow, 20).setValue(sheet.getRange(row, 2).getValue()); // Colonne B → T
+        destinationSheet.getRange(firstEmptyRow, 2).setValue(sheet.getRange(row, 3).getValue()); // Colonne C → B
+        destinationSheet.getRange(firstEmptyRow, 8).setValue(sheet.getRange(row, 4).getValue()); // Colonne D → H
+        destinationSheet.getRange(firstEmptyRow, 9).setValue(sheet.getRange(row, 5).getValue()); // Colonne E → I
+        destinationSheet.getRange(firstEmptyRow, 7).setValue(sheet.getRange(row, 6).getValue()); // Colonne F → G
+        destinationSheet.getRange(firstEmptyRow, 3).setValue(sheet.getRange(row, 7).getValue()); // Colonne G → C
+        destinationSheet.getRange(firstEmptyRow, 5).setValue(sheet.getRange(row, 8).getValue()); // Colonne H → E
+        destinationSheet.getRange(firstEmptyRow, 10).setValue(sheet.getRange(row, 9).getValue()); // Colonne I → J
+        destinationSheet.getRange(firstEmptyRow, 11).setValue(sheet.getRange(row, 17).getValue()); // Colonne Q → K
+        destinationSheet.getRange(firstEmptyRow, 6).setValue(1); // Colonne F = 1
+        destinationSheet.getRange(firstEmptyRow, 15).setValue("En Cours"); // Colonne O = "En Cours"
+
+        // 📌 **Ajout : Exporter la date (colonne A) vers la colonne U (21)**
+        destinationSheet.getRange(firstEmptyRow, 21).setValue(sheet.getRange(row, 1).getValue()); // Colonne A → U
+      }
+    }
+  }
+}
