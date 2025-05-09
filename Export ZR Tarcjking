@@ -1,0 +1,96 @@
+function ExpeditionToZR() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  var data = sheet.getDataRange().getValues();
+  
+  var token = "ec9d3af1f0834fb55c196e4796646abb95542a68606aadf55646df3d1fb9059d";  // Remplace par ton token 
+  var key = "14750eee746749e7ba16c79995c12566";  // Remplace par ta clé API 
+
+  for (var i = 0; i < data.length; i++) {
+    var statusQ = data[i][16];  // Colonne Q (Expédier ZR)
+    var statusR = data[i][17];  // Colonne R (statut d'expédition)
+
+    // Vérifier si la commande doit être envoyée
+    if (statusQ === "Expédier ZR" && statusR !== "Order (ZR) Sent") {
+      
+      // Initialiser le tableau des erreurs
+      var errorMessages = [];
+      
+      // Vérifier si les informations obligatoires sont présentes et valides
+      var client = data[i][1];  // Nom
+      var mobileA = data[i][2];  // Téléphone 1
+      var idWilaya = data[i][4];  // Code Wilaya
+      var commune = data[i][5];  // Commune
+      var total = data[i][6];  // Total
+      var produit = data[i][8];  // Produit
+      
+      // Ajouter les messages d'erreur si une cellule est vide
+      if (!client) errorMessages.push("Client manquant");
+      if (!mobileA) errorMessages.push("MobileA manquant");
+      if (!idWilaya) errorMessages.push("IDWilaya manquant");
+      if (!commune) errorMessages.push("Commune manquante");
+      if (!total) errorMessages.push("Total manquant");
+      if (!produit) errorMessages.push("Produit manquant");
+
+      // Fusion des remarques (J + L)
+      function mergeRemarks(remark1, remark2) {
+        if (remark1 && remark2) return remark1 + " - " + remark2;
+        return remark1 || remark2 || "";
+      }
+      var remarque = mergeRemarks(data[i][9], data[i][11]);
+
+      // Si plus d'un champ est manquant, afficher "Erroné"
+      if (errorMessages.length > 1) {
+        sheet.getRange(i + 1, 18).setValue("Erroné");
+      } else if (errorMessages.length > 0) {
+        // Sinon afficher les messages d'erreur détaillés
+        sheet.getRange(i + 1, 18).setValue("Erreur: " + errorMessages.join(", "));
+      } else {
+        // Si toutes les informations sont valides, procéder à l'envoi
+        var colisData = {
+          "Colis": [{
+            "Tracking": "",  
+            "TypeLivraison": data[i][13] == "OUI" ? "1" : "0",  
+            "TypeColis": data[i][12] == "OUI" ? "1" : "0",  
+            "Confrimee": "",
+            "Client": client,  
+            "MobileA": mobileA,  
+            "MobileB": data[i][3],  
+            "Adresse": data[i][11],  
+            "IDWilaya": idWilaya,  
+            "Commune": commune,  
+            "Total": total,  
+            "Note": remarque,  
+            "TProduit": produit,  
+            "id_Externe": "",  
+            "Source": ""
+          }]
+        };
+
+        var url = "https://procolis.com/api_v1/add_colis";
+        var options = {
+          method: "post",
+          contentType: "application/json",
+          headers: {
+            "token": token,
+            "key": key
+          },
+          payload: JSON.stringify(colisData)
+        };
+
+        try {
+          var response = UrlFetchApp.fetch(url, options);
+          var result = JSON.parse(response.getContentText());
+
+          if (result.Colis[0].MessageRetour === "Double Tracking") {
+            Logger.log("Numéro de suivi déjà utilisé.");
+          } else {
+            // Mettre à jour la colonne R pour éviter un nouvel envoi
+            sheet.getRange(i + 1, 18).setValue("Order (ZR) Sent");
+          }
+        } catch (e) {
+          Logger.log("Erreur : " + e.message);
+        }
+      }
+    }
+  }
+}
