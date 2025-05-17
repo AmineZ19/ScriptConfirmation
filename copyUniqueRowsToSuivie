@@ -1,0 +1,67 @@
+function copyUniqueRowsToSuivie() {
+  var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  var ordersSheet = spreadsheet.getSheetByName('Orders');
+  var suivieSheet = spreadsheet.getSheetByName('Suivie');
+  
+  if (!ordersSheet || !suivieSheet) {
+    Logger.log('Error: Required sheets not found.');
+    return;
+  }
+
+  // Retrieve data from "Orders" sheet (columns A to I), excluding the header
+  var lastRowOrders = ordersSheet.getLastRow();
+  if (lastRowOrders < 2) { // No data beyond the header
+    Logger.log('No data found in "Orders" sheet.');
+    return;
+  }
+
+  var ordersData = ordersSheet.getRange(2, 1, lastRowOrders - 1, 9).getValues();
+
+  // Create a set of unique identifiers from the "Suivie" sheet
+  var existingIdentifiers = new Set();
+  var lastRowSuivie = suivieSheet.getLastRow();
+  
+  if (lastRowSuivie > 1) { // Check if there is data beyond the header
+    var suivieData = suivieSheet.getRange(2, 1, lastRowSuivie - 1, 9).getValues();
+    for (var i = 0; i < suivieData.length; i++) {
+      var id1 = suivieData[i][0];
+      var id2 = suivieData[i][1];
+      existingIdentifiers.add(id1 + "|" + id2);
+    }
+  }
+
+  // Prepare a list of unique rows to append
+  var rowsToAppend = [];
+  for (var j = 0; j < ordersData.length; j++) {
+    var id1 = ordersData[j][0];
+    var id2 = ordersData[j][1];
+    var combinedId = id1 + "|" + id2;
+    
+    if (!existingIdentifiers.has(combinedId)) {
+      rowsToAppend.push(ordersData[j]);
+      existingIdentifiers.add(combinedId);
+    }
+  }
+
+  // Add new rows to "Suivie"
+  if (rowsToAppend.length > 0) {
+    // Find the first empty row in the A:I range
+    var numRows = suivieSheet.getMaxRows();
+    var rangeData = suivieSheet.getRange(2, 1, numRows - 1, 9).getValues(); // Data in range A:I
+    var nextRow = 2;
+
+    while (nextRow <= numRows - 1 && rangeData[nextRow - 2].some(cell => cell !== "")) {
+      nextRow++;
+    }
+
+    // Add the new rows starting from the first empty row in A:I
+    if (nextRow <= numRows) {
+      suivieSheet.getRange(nextRow, 1, rowsToAppend.length, 9).setValues(rowsToAppend);
+      Logger.log('Rows added: ' + rowsToAppend.length);
+    } else {
+      Logger.log('No space available in the A:I range to add new rows.');
+    }
+  } else {
+    Logger.log('No new rows to append.');
+  }
+}
