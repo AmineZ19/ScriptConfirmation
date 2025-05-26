@@ -1,0 +1,183 @@
+//Ce script Envoie les commandes ZR et update la dernier situation colis
+
+const token = "4eeaf00aecacb1217eda03bb86069fb0dac2fe514609e40b23392afb51a79246";
+const cle = "3fb054b70a8b479eab0b4f601d5b6054";
+const feuilleNom = "Godyma";
+
+function envoyerCommandesZR() {
+  const feuille = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(feuilleNom);
+  const donnees = feuille.getDataRange().getValues();
+
+  const url = "https://procolis.com/api_v1/add_colis";
+  const colisAEnvoyer = [];
+  const lignesAEnvoyer = [];
+
+  for (let i = 1; i < donnees.length; i++) {
+    const ligne = donnees[i];
+    const declencheur = ligne[14]; // Colonne O
+    const societe = ligne[12];     // Colonne M
+    const trackingExistant = ligne[21]; // Colonne V
+
+    if (declencheur === "Expedit") {
+      if (societe !== "ZR" && societe !== "NS" && societe !== "ZN") {
+        feuille.getRange(i + 1, 17).setValue("Veuillez sélectionner la société."); // Colonne Q
+        continue;
+      }
+
+      if (societe === "ZR" && (!trackingExistant || trackingExistant === "")) {
+        const typeLivraison = (ligne[13] && ligne[13].toString().toLowerCase() === "oui") ? "1" : "0";
+        const typeColis = (ligne[10] && ligne[10].toString().toLowerCase().includes("echange")) ? "1" : "0";
+        const client = ligne[1];
+        const mobileA = ligne[2];
+        const mobileB = ligne[3] || "";
+        const adresse = ligne[6];
+        const idWilaya = ligne[7];
+        const commune = ligne[8];
+        const total = ligne[9];
+        const tProduit = ligne[4];
+        const idExterne = ligne[19] || "";
+        const noteClient = ((ligne[10] || "") + " " + (ligne[11] || "")).trim();
+
+        colisAEnvoyer.push({
+          Tracking: "",
+          TypeLivraison: typeLivraison,
+          TypeColis: typeColis,
+          Confrimee: "0",
+          Client: client,
+          MobileA: mobileA,
+          MobileB: mobileB,
+          Adresse: adresse,
+          IDWilaya: idWilaya,
+          Commune: commune,
+          Total: total,
+          Note: noteClient,
+          TProduit: tProduit,
+          id_Externe: idExterne,
+          Source: ""
+        });
+
+        lignesAEnvoyer.push(i + 1);
+      }
+    }
+  }
+
+  if (colisAEnvoyer.length === 0) {
+    Logger.log("Aucun colis à envoyer.");
+    return;
+  }
+
+  const options = {
+    method: "post",
+    contentType: "application/json",
+    payload: JSON.stringify({ Colis: colisAEnvoyer }),
+    headers: {
+      token: token,
+      key: cle
+    }
+  };
+
+  try {
+    const reponse = UrlFetchApp.fetch(url, options);
+    const resultat = JSON.parse(reponse.getContentText());
+    const feuille = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(feuilleNom);
+
+    if (resultat && resultat.Colis && resultat.Colis.length === colisAEnvoyer.length) {
+      for (let j = 0; j < resultat.Colis.length; j++) {
+        const trackingRetour = resultat.Colis[j].Tracking;
+        const ligneSheet = lignesAEnvoyer[j];
+        const maintenant = new Date();
+
+        feuille.getRange(ligneSheet, 22).setValue(trackingRetour); // Colonne V
+        feuille.getRange(ligneSheet, 23).setValue(maintenant);     // Colonne W
+
+        const cellQ = feuille.getRange(ligneSheet, 17);
+        const texteActuel = cellQ.getValue();
+        const ancienneNote = cellQ.getNote();
+
+        if (!texteActuel) {
+          cellQ.setValue(`✅ ZR: ${trackingRetour}`); // ✅ = validation
+          cellQ.setNote(`Order ZR sent`);
+        } else {
+          let nouvelleNote = ancienneNote ? ancienneNote + "\n" : "";
+          const lignesExistantes = ancienneNote ? ancienneNote.split("\n") : [];
+          const numeroNote = lignesExistantes.length + 1;
+          nouvelleNote += `${numeroNote}. ${texteActuel}`;
+          cellQ.setNote(nouvelleNote);
+          cellQ.setValue(`✅ ZR: ${trackingRetour}`);
+        }
+      }
+      Logger.log(`${resultat.Colis.length} colis envoyés avec succès.`);
+    } else {
+      Logger.log("Erreur : réponse inattendue de l’API.");
+    }
+  } catch (e) {
+    Logger.log("Erreur lors de l’envoi à l’API : " + e.message);
+  }
+}
+
+function mettreAJourStatutsZR() {
+  const feuille = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(feuilleNom);
+  const donnees = feuille.getDataRange().getValues();
+  const url = "https://procolis.com/api_v1/lire";
+  const trackings = [];
+  const lignes = [];
+
+  for (let i = 1; i < donnees.length; i++) {
+    const tracking = donnees[i][21]; // Colonne V (index 21)
+    if (tracking && tracking.toString().trim() !== "") {
+      trackings.push({ Tracking: tracking.toString().trim() });
+      lignes.push(i + 1);
+    }
+  }
+
+  if (trackings.length === 0) {
+    Logger.log("Aucun tracking disponible pour mise à jour.");
+    return;
+  }
+
+  const options = {
+    method: "post",
+    contentType: "application/json",
+    payload: JSON.stringify({ Colis: trackings }),
+    headers: {
+      token: token,
+      key: cle
+    }
+  };
+
+  try {
+    const reponse = UrlFetchApp.fetch(url, options);
+    Logger.log("Réponse brute de l'API : " + reponse.getContentText());
+    const resultat = JSON.parse(reponse.getContentText());
+
+    if (resultat && resultat.Colis) {
+      for (let j = 0; j < resultat.Colis.length; j++) {
+        const colis = resultat.Colis[j];
+        const ligneSheet = lignes[j];
+
+        const statut = colis.Situation || "Statut inconnu";
+        const clientNom = colis.Client || "";  // Adapter si nom client a un autre nom de champ
+
+        // Met à jour la colonne Q (17) avec le statut
+        feuille.getRange(ligneSheet, 17).setValue(statut);
+
+        // Met à jour la colonne R (18) avec le nom du client
+        feuille.getRange(ligneSheet, 18).setValue(clientNom);
+      }
+      Logger.log("Mise à jour des statuts terminée.");
+    } else {
+      Logger.log("Erreur : Réponse inattendue de l'API.");
+    }
+  } catch (e) {
+    Logger.log("Erreur lors de la récupération des statuts : " + e.message);
+  }
+}
+
+
+function onOpen() {
+  const ui = SpreadsheetApp.getUi();
+  ui.createMenu("🔄 Procolis")
+    .addItem("Update ALL", "mettreAJourStatutsZR")
+    .addItem("Update Ligne sélectionnée", "mettreAJourStatutLigneSelectionneeZR")
+    .addToUi();
+}
