@@ -1,0 +1,408 @@
+// all.gs - Procolis API Integration for Google Sheets
+  // Ensure no other code exists in this file to avoid SyntaxError
+
+  // ✅ Variables globales
+  // Note: Set "API_TOKEN" and "API_KEY" in File > Project Properties > Script Properties
+  const token = PropertiesService.getScriptProperties().getProperty("API_TOKEN");
+  const cle = PropertiesService.getScriptProperties().getProperty("API_KEY");
+  const feuilleNom = "Godyma"; // Sheet name; ensure it matches exactly in Google Sheets
+
+  // Helper function to append numbered notes
+  function appendNumberedNote(cell, text) {
+    if (!cell || typeof cell.getNote !== 'function') {
+      Logger.log(`Erreur: Objet cellule non défini dans appendNumberedNote`);
+      return;
+    }
+    const existingNote = cell.getNote() || "";
+    const lines = existingNote.split("\n").filter(line => line.trim());
+    const nextNumber = lines.length + 1;
+    const newNote = `${existingNote ? existingNote + "\n" : ""}${nextNumber}. ${text.trim()}`;
+    cell.setNote(newNote);
+  }
+
+  // ✅ Function to send parcels and update status
+  function expedierEtMettreAJourStatutZR() {
+    // Validate API credentials
+    if (!token || !cle) {
+      Logger.log(`Erreur: Clé API ou token manquant dans les propriétés du script`);
+      return;
+    }
+
+    const feuille = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(feuilleNom);
+    if (!feuille) {
+      Logger.log(`Erreur: Feuille "${feuilleNom}" introuvable`);
+      return;
+    }
+
+    const donnees = feuille.getDataRange().getValues();
+    if (donnees.length < 2) {
+      Logger.log(`Erreur: La feuille "${feuilleNom}" a trop peu de lignes`);
+      return;
+    }
+
+    const urlAddColis = "https://procolis.com/api_v1/add_colis";
+    const urlLire = "https://procolis.com/api_v1/lire";
+    const colisAEnvoyer = [];
+    const lignesAEnvoyer = [];
+
+    // Step 1: Collect parcels to send
+    // Column mappings (0-based):
+    // A (0): Unused, B (1): Client, C (2): MobileA, D (3): MobileB, E (4): TProduit, F (5): Unused,
+    // G (6): Adresse, H (7): IDWilaya, I (8): Commune, J (9): Total, K (10): Note1, L (11): Note2,
+    // M (12): Societe, N (13): TypeLivraison, O (14): Declencheur, P (15): Unused, Q (16): Status,
+    // R (17): Unused, S (18): Unused, T (19): Unused, U (20): IDExterne, V (21): Tracking, W (22): Date, X (23): Unused
+    for (let i = 1; i < donnees.length; i++) {
+      const ligne = donnees[i];
+      const declencheur = ligne[14]; // Column O
+      const societe = ligne[12];     // Column M
+      const trackingExistant = ligne[21]; // Column V
+
+      if (declencheur === "Expedit") {
+        if (societe !== "ZR" && societe !== "NS" && societe !== "ZN") {
+          const cellQ = feuille.getRange(i + 1, 17); // Column Q
+          cellQ.setValue("Veuillez sélectionner la société.");
+          appendNumberedNote(cellQ, "Erreur: Société invalide");
+          continue;
+        }
+
+        if (societe === "ZR" && (!trackingExistant || trackingExistant === "")) {
+          const typeLivraison = (ligne[13] && ligne[13].toString().toLowerCase() === "oui") ? "1" : "0";
+          const typeColis = (ligne[10] && ligne[10].toString().toLowerCase().includes("echange")) ? "1" : "0";
+          const client = ligne[1];
+          const mobileA = ligne[2];
+          const mobileB = ligne[3] || "";
+          const adresse = ligne[6];
+          const idWilaya = ligne[7];
+          const commune = ligne[8];
+          const total = ligne[9];
+          const tProduit = ligne[4];
+          const idExterne = ligne[20] || "";
+          const noteClient = ((ligne[10] || "") + " " + (ligne[11] || "")).trim();
+
+          // Validate required fields
+          let errorMessage = null;
+          if (!client || client.toString().trim() === "") {
+            errorMessage = "Client Missing";
+          } else if (!mobileA || mobileA.toString().trim() === "") {
+            errorMessage = "Phone Missing";
+          } else if (!idWilaya || idWilaya.toString().trim() === "") {
+            errorMessage = "Wilaya Missing";
+          } else if (!commune || commune.toString().trim() === "") {
+            errorMessage = "Commune Missing";
+          } else if (!total || total.toString().trim() === "") {
+            errorMessage = "Price Missing";
+          } else if (!tProduit || tProduit.toString().trim() === "") {
+            errorMessage = "Product Missing";
+          }
+
+          if (errorMessage) {
+            const cellQ = feuille.getRange(i + 1, 17); // Column Q
+            cellQ.setValue(errorMessage);
+            appendNumberedNote(cellQ, errorMessage);
+            Logger.log(`Erreur: ${errorMessage} à la ligne ${i + 1}`);
+            continue;
+          }
+
+          colisAEnvoyer.push({
+            Tracking: "",
+            TypeLivraison: typeLivraison,
+            TypeColis: typeColis,
+            Confrimee: "0",
+            Client: client,
+            MobileA: mobileA,
+            MobileB: mobileB,
+            Adresse: adresse,
+            IDWilaya: idWilaya,
+            Commune: commune,
+            Total: total,
+            Note: noteClient,
+            TProduit: tProduit,
+            id_Externe: idExterne,
+            Source: ""
+          });
+
+          lignesAEnvoyer.push(i + 1);
+        }
+      }
+    }
+
+    if (colisAEnvoyer.length === 0) {
+      Logger.log("Aucun colis valide à envoyer.");
+      return;
+    }
+
+    // Step 2: Send parcels to API
+    const optionsAdd = {
+      method: "post",
+      contentType: "application/json",
+      payload: JSON.stringify({ Colis: colisAEnvoyer }),
+      headers: {
+        token: token,
+        key: cle
+      }
+    };
+
+    try {
+      const reponseAdd = UrlFetchApp.fetch(urlAddColis, optionsAdd);
+      const statusCode = reponseAdd.getResponseCode();
+
+      // Check if the request was successful
+      if (statusCode >= 200 && statusCode < 300) {
+        const resultatAdd = JSON.parse(reponseAdd.getContentText());
+
+        if (resultatAdd && resultatAdd.Colis && resultatAdd.Colis.length === colisAEnvoyer.length) {
+          for (let j = 0; j < resultatAdd.Colis.length; j++) {
+            const trackingRetour = resultatAdd.Colis[j].Tracking;
+            if (!trackingRetour) {
+              Logger.log(`Erreur: Tracking manquant dans la réponse API pour colis ${j + 1}`);
+              continue;
+            }
+
+            const ligneSheet = lignesAEnvoyer[j];
+            if (!ligneSheet || ligneSheet < 2 || ligneSheet > donnees.length) {
+              Logger.log(`Erreur: Index de ligne invalide ${ligneSheet} pour tracking ${trackingRetour}`);
+              continue;
+            }
+
+            const maintenant = new Date();
+            const nomFeuille = feuille.getRange(ligneSheet, 2).getValue(); // Column B
+            const nomAPI = resultatAdd.Colis[j].Client || "";
+            const matchNom = nomAPI.trim() === nomFeuille.trim();
+            const texteNote = `${trackingRetour} (Client ${matchNom ? "✓" : "✗"})`;
+
+            // Update tracking and date
+            feuille.getRange(ligneSheet, 22).setValue(trackingRetour); // Column V
+            feuille.getRange(ligneSheet, 23).setValue(maintenant); // Column W
+
+            // Update column Q and notes
+            const cellQ = feuille.getRange(ligneSheet, 17); // Column Q
+            cellQ.setValue(trackingRetour);
+            appendNumberedNote(cellQ, texteNote);
+
+            // Step 3: Fetch status for this tracking number
+            const optionsLire = {
+              method: "post",
+              contentType: "application/json",
+              payload: JSON.stringify({ Colis: [{ Tracking: trackingRetour }] }),
+              headers: { token: token, key: cle }
+            };
+
+            try {
+              const reponseLire = UrlFetchApp.fetch(urlLire, optionsLire);
+              const lireStatusCode = reponseLire.getResponseCode();
+
+              if (lireStatusCode >= 200 && lireStatusCode < 300) {
+                const resultatLire = JSON.parse(reponseLire.getContentText());
+
+                if (resultatLire && resultatLire.Colis && resultatLire.Colis.length > 0) {
+                  const colis = resultatLire.Colis[0];
+                  const statut = colis.Situation || "Statut inconnu";
+                  const clientNomAPI = colis.Client || "";
+                  const clientNomFeuille = feuille.getRange(ligneSheet, 2).getValue();
+                  const clientMatch = clientNomAPI.trim() === clientNomFeuille.trim();
+                  const statusNote = `${statut} (Client ${clientMatch ? "✓" : "✗"})`;
+
+                  // Update column Q and notes
+                  cellQ.setValue(statut);
+                  appendNumberedNote(cellQ, statusNote);
+                  // Update column O if status is "En préparation"
+                  if (statut === "En Préparation") {
+                    feuille.getRange(ligneSheet, 15).setValue("En Preparation"); // Column O
+                  }
+                } else {
+                  const errorMessage = "Erreur: Réponse API lire invalide";
+                  cellQ.setValue(errorMessage);
+                  appendNumberedNote(cellQ, errorMessage);
+                  Logger.log(`Erreur mise à jour statut pour tracking ${trackingRetour}, ligne ${ligneSheet}: réponse invalide`);
+                }
+              } else {
+                const errorMessage = `Erreur API lire (statut ${lireStatusCode})`;
+                cellQ.setValue(errorMessage);
+                appendNumberedNote(cellQ, errorMessage);
+                Logger.log(`Erreur mise à jour statut pour tracking ${trackingRetour}, ligne ${ligneSheet}: statut ${lireStatusCode}`);
+              }
+            } catch (e) {
+              const errorMessage = `Erreur mise à jour statut: ${e.message}`;
+              cellQ.setValue(errorMessage);
+              appendNumberedNote(cellQ, errorMessage);
+              Logger.log(`Erreur mise à jour statut pour tracking ${trackingRetour}, ligne ${ligneSheet}: ${e.message}`);
+            }
+          }
+        } else {
+          Logger.log("Erreur: Réponse API add_colis invalide ou nombre de colis incorrect");
+          for (let j = 0; j < lignesAEnvoyer.length; j++) {
+            const ligneSheet = lignesAEnvoyer[j];
+            if (!ligneSheet || ligneSheet < 2 || ligneSheet > donnees.length) {
+              Logger.log(`Erreur: Index de ligne invalide ${ligneSheet} pour journalisation d'erreur`);
+              continue;
+            }
+            const cellQ = feuille.getRange(ligneSheet, 17);
+            const errorMessage = "Erreur: Réponse API add_colis invalide";
+            cellQ.setValue(errorMessage);
+            appendNumberedNote(cellQ, errorMessage);
+          }
+        }
+      } else {
+        let errorMessage = `Erreur API add_colis (statut ${statusCode})`;
+        try {
+          const errorResponse = JSON.parse(reponseAdd.getContentText());
+          errorMessage += `: ${errorResponse.message || "Détails non disponibles"}`;
+        } catch (parseError) {
+          errorMessage += ": Impossible de lire les détails de l'erreur";
+        }
+        for (let j = 0; j < lignesAEnvoyer.length; j++) {
+          const ligneSheet = lignesAEnvoyer[j];
+          if (!ligneSheet || ligneSheet < 2 || ligneSheet > donnees.length) {
+            Logger.log(`Erreur: Index de ligne invalide ${ligneSheet} pour journalisation d'erreur`);
+            continue;
+          }
+          const cellQ = feuille.getRange(ligneSheet, 17);
+          cellQ.setValue(errorMessage);
+          appendNumberedNote(cellQ, errorMessage);
+        }
+        Logger.log(errorMessage);
+      }
+    } catch (e) {
+      const errorMessage = `Erreur lors de l’envoi à l’API add_colis: ${e.message}`;
+      for (let j = 0; j < lignesAEnvoyer.length; j++) {
+        const ligneSheet = lignesAEnvoyer[j];
+        if (!ligneSheet || ligneSheet < 2 || ligneSheet > donnees.length) {
+          Logger.log(`Erreur: Index de ligne invalide ${ligneSheet} pour journalisation d'erreur`);
+          continue;
+        }
+        const cellQ = feuille.getRange(ligneSheet, 17);
+        cellQ.setValue(errorMessage);
+        appendNumberedNote(cellQ, errorMessage);
+      }
+      Logger.log(errorMessage);
+    }
+  }
+
+  // ✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅ Function to update all ZR statuses
+  function mettreAJourTousStatutsZR() {
+    // Validate API credentials
+    if (!token || !cle) {
+      Logger.log(`Erreur: Clé API ou token manquant dans les propriétés du script`);
+      return;
+    }
+
+    const feuille = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(feuilleNom);
+    if (!feuille) {
+      Logger.log(`Erreur: Feuille "${feuilleNom}" introuvable`);
+      return;
+    }
+
+    const donnees = feuille.getDataRange().getValues();
+    if (donnees.length < 2) {
+      Logger.log(`Erreur: La feuille "${feuilleNom}" a trop peu de lignes`);
+      return;
+    }
+
+    const url = "https://procolis.com/api_v1/lire";
+    const trackingLigneMap = {};
+    const trackings = [];
+
+    // Collect tracking numbers
+    for (let i = 1; i < donnees.length; i++) {
+      const tracking = donnees[i][21]; // Column V
+      if (tracking && tracking.toString().trim() !== "") {
+        const t = tracking.toString().trim();
+        trackingLigneMap[t] = i + 1;
+        trackings.push({ Tracking: t });
+      }
+    }
+
+    if (trackings.length === 0) {
+      Logger.log("Aucun numéro de suivi à mettre à jour.");
+      return;
+    }
+
+    // Send API request
+    const options = {
+      method: "post",
+      contentType: "application/json",
+      payload: JSON.stringify({ Colis: trackings }),
+      headers: { token: token, key: cle }
+    };
+
+    try {
+      const reponse = UrlFetchApp.fetch(url, options);
+      const statusCode = reponse.getResponseCode();
+
+      if (statusCode >= 200 && statusCode < 300) {
+        const resultat = JSON.parse(reponse.getContentText());
+
+        if (resultat && resultat.Colis) {
+          resultat.Colis.forEach(colis => {
+            if (!colis.Tracking) {
+              Logger.log(`Erreur: Tracking manquant dans la réponse API`);
+              return;
+            }
+            const tracking = colis.Tracking.toString().trim();
+            const ligneSheet = trackingLigneMap[tracking];
+            if (!ligneSheet || ligneSheet < 2 || ligneSheet > donnees.length) {
+              Logger.log(`Erreur: Index de ligne invalide ${ligneSheet} pour tracking ${tracking}`);
+              return;
+            }
+
+            const statut = colis.Situation || "Statut inconnu";
+            const clientNomAPI = colis.Client || "";
+            const clientNomFeuille = feuille.getRange(ligneSheet, 2).getValue();
+            const clientMatch = clientNomAPI.trim() === clientNomFeuille.trim();
+            const statusNote = `${statut} (Client ${clientMatch ? "✓" : "✗"})`;
+
+            // Update column Q and notes
+            const cellQ = feuille.getRange(ligneSheet, 17);
+            cellQ.setValue(statut);
+            appendNumberedNote(cellQ, statusNote);
+            // Update column O if status is "En préparation"
+            if (statut === "En Préparation") {
+              feuille.getRange(ligneSheet, 15).setValue("En Preparation"); // Column O
+            }
+          });
+        } else {
+          Logger.log("Erreur: Réponse API lire invalide ou aucun colis retourné");
+          Object.values(trackingLigneMap).forEach(ligneSheet => {
+            if (!ligneSheet || ligneSheet < 2 || ligneSheet > donnees.length) {
+              Logger.log(`Erreur: Index de ligne invalide ${ligneSheet} pour journalisation d'erreur`);
+              return;
+            }
+            const cellQ = feuille.getRange(ligneSheet, 17);
+            const errorMessage = "Erreur: Réponse API lire invalide";
+            cellQ.setValue(errorMessage);
+            appendNumberedNote(cellQ, errorMessage);
+          });
+        }
+      } else {
+        let errorMessage = `Erreur API lire (statut ${statusCode})`;
+        try {
+          const errorResponse = JSON.parse(reponse.getContentText());
+          errorMessage += `: ${errorResponse.message || "Détails non disponibles"}`;
+        } catch (parseError) {
+          errorMessage += ": Impossible de lire les détails de l'erreur";
+        }
+        Logger.log(errorMessage);
+        Object.values(trackingLigneMap).forEach(ligneSheet => {
+          if (!ligneSheet || ligneSheet < 2 || ligneSheet > donnees.length) {
+            Logger.log(`Erreur: Index de ligne invalide ${ligneSheet} pour journalisation d'erreur`);
+            return;
+          }
+          const cellQ = feuille.getRange(ligneSheet, 17);
+          cellQ.setValue(errorMessage);
+          appendNumberedNote(cellQ, errorMessage);
+        });
+      }
+    } catch (e) {
+      const errorMessage = `Erreur lors de la mise à jour des statuts: ${e.message}`;
+      Logger.log(errorMessage);
+      Object.values(trackingLigneMap).forEach(ligneSheet => {
+        if (!ligneSheet || ligneSheet < 2 || ligneSheet > donnees.length) {
+          Logger.log(`Erreur: Index de ligne invalide ${ligneSheet} pour journalisation d'erreur`);
+          return;
+        }
+        const cellQ = feuille.getRange(ligneSheet, 17);
+        cellQ.setValue(errorMessage);
+        appendNumberedNote(cellQ, errorMessage);
+      });
+    }
+  }
