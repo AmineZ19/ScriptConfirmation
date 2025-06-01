@@ -346,6 +346,7 @@
           }
 
           const statut = colis.Situation || "Statut inconnu";
+          const commentaire = colis.Commentaire || "";
           const clientNomAPI = colis.Client || "";
           const clientNomFeuille = feuille.getRange(ligneSheet, 2).getValue();
           const clientMatch = clientNomAPI.trim() === clientNomFeuille.trim();
@@ -354,32 +355,60 @@
           // Update column Q and notes
           const cellQ = feuille.getRange(ligneSheet, 17);
           const currentStatus = cellQ.getValue();
+          const existingNote = cellQ.getNote() || "";
+          const noteLines = existingNote.split("\n").filter(line => line.trim());
+          // Find last main note number, ignoring sub-notes
+          const lastMainNote = noteLines.slice().reverse().find(line => line.match(/^(\d+)\.\s/));
+          const lastNoteIndex = lastMainNote ? parseInt(lastMainNote.match(/^(\d+)\./)?.[1] || 0) : 0;
+          const nextNoteNumber = lastNoteIndex === 0 ? 1 : lastNoteIndex + (statut === currentStatus ? 0 : 1);
 
-          if (statut === currentStatus) {
-            // Same status: update the latest note with a counter
-            const existingNote = cellQ.getNote() || "";
-            const noteLines = existingNote.split("\n").filter(line => line.trim());
-            if (noteLines.length > 0) {
-              const lastNote = noteLines[noteLines.length - 1];
-              const match = lastNote.match(/^(\d+\.\s*)(.*?)\s*\(Client\s*[✓✗]\)\s*(\(\d+\))?$/);
-              if (match && match[2].trim() === statut) {
-                // Last note matches status; increment counter
-                const number = match[1];
-                const counter = match[3] ? parseInt(match[3].slice(1, -1)) + 1 : 2;
-                noteLines[noteLines.length - 1] = `${number}${statut} (Client ${clientMatch ? "✓" : "✗"}) (${counter})`;
-                cellQ.setNote(noteLines.join("\n"));
-              } else {
-                // Last note is different; append new note
-                appendNumberedNote(cellQ, statusNote);
-              }
+          if (statut === currentStatus && noteLines.length > 0) {
+            // Same status: update the latest main note with a counter
+            const lastNote = noteLines[noteLines.length - 1];
+            const match = lastNote.match(/^(\d+\.\s*)(.*?)\s*\(Client\s*[✓✗]\)\s*(\(\d+\))?$/);
+            if (match && match[2].trim() === statut) {
+              // Last main note matches status; increment counter
+              const number = match[1];
+              const counter = match[3] ? parseInt(match[3].slice(1, -1)) + 1 : 2;
+              noteLines[noteLines.length - 1] = `${number}${statut} (Client ${clientMatch ? "✓" : "✗"}) (${counter})`;
             } else {
-              // No existing notes; append new note
-              appendNumberedNote(cellQ, statusNote);
+              // Last note is a sub-note or different; append new main note
+              noteLines.push(`${nextNoteNumber}. ${statusNote}`);
             }
           } else {
-            // Different status: append new note
-            appendNumberedNote(cellQ, statusNote);
+            // Different status or no notes; append new main note
+            noteLines.push(`${nextNoteNumber}. ${statusNote}`);
           }
+
+          // Handle commentaire if valid (not "0" or "")
+          if (commentaire && commentaire !== "0" && commentaire !== "") {
+            // Use the current main note number
+            const currentMainNumber = nextNoteNumber;
+
+            // Find the last commentaire sub-note (any format: "- X.1 :" or "X.1 :")
+            const lastCommentLine = noteLines.slice().reverse().find(line => line.match(/^(?:\-)?\s*(\d+)\.1\s*:/));
+            let commentCounter = 1;
+            let updateComment = false;
+
+            if (lastCommentLine) {
+              const commentMatch = lastCommentLine.match(/^(?:\-)?\s*(\d+)\.1\s*:\s*\((.*?)\)\s*(\(\d+\))?$/);
+              if (commentMatch && commentMatch[2].trim() === commentaire.trim() && parseInt(commentMatch[1]) === currentMainNumber) {
+                // Same commentaire and same main note number; increment counter
+                commentCounter = commentMatch[3] ? parseInt(commentMatch[3].slice(1, -1)) + 1 : 2;
+                const lastCommentIndex = noteLines.lastIndexOf(lastCommentLine);
+                noteLines[lastCommentIndex] = `- ${currentMainNumber}.1 : (${commentaire}) (${commentCounter})`;
+                updateComment = true;
+              }
+            }
+
+            if (!updateComment) {
+              // New or different commentaire, or no prior sub-note; append new sub-note
+              noteLines.push(`- ${currentMainNumber}.1 : (${commentaire}) (1)`);
+            }
+          }
+
+          // Update the note
+          cellQ.setNote(noteLines.join("\n"));
 
           // Update column Q
           cellQ.setValue(statut);
