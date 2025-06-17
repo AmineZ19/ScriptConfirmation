@@ -13,19 +13,17 @@ const MAX_RETRIES = 3;
 function traiterCommandesNoest() {
   // Retrieve API_TOKEN and USER_GUID from Script Properties
   const properties = PropertiesService.getScriptProperties();
-  const API_TOKEN = properties.getProperty('API_TOKEN');
-  const USER_GUID = properties.getProperty('USER_GUID');
+  const API_TOKEN = properties.getProperty('TOKEN_NOEST');
+  const USER_GUID = properties.getProperty('GUID_NOEST');
 
   // Check for missing properties
   if (!API_TOKEN || !USER_GUID) {
-    Logger.log('Erreur: API_TOKEN ou USER_GUID manquant dans les propriétés du script.');
     return;
   }
 
   const feuille = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Suivie');
   const lastRow = feuille.getLastRow();
   if (lastRow < 2) {
-    Logger.log('Aucune donnée à traiter.');
     return;
   }
 
@@ -42,7 +40,6 @@ function traiterCommandesNoest() {
 
   for (let i = 0; i < donnees.length; i++) {
     if (new Date() - startTime > MAX_EXECUTION_TIME) {
-      Logger.log(`Arrêté à la ligne ${i + 2} en raison de la limite de temps`);
       break;
     }
 
@@ -85,9 +82,6 @@ function traiterCommandesNoest() {
           const response = UrlFetchApp.fetch(CONFIG.API_URL_CREATE, options);
           const result = JSON.parse(response.getContentText());
           
-          // Log the API response
-          Logger.log(`Create Order (Row ${i + 2}): Success=${result.success}, Tracking=${result.tracking || 'N/A'}, Message=${result.message || JSON.stringify(result)}`);
-          
           if (result.success) {
             updates[i][1] = result.tracking; // V
             updates[i][0] = ''; // Clear U
@@ -100,7 +94,6 @@ function traiterCommandesNoest() {
           retries++;
           if (retries === MAX_RETRIES) {
             updates[i][1] = `Erreur réseau après ${retries} tentatives: ${e.message}`;
-            Logger.log(`Create Order Error (Row ${i + 2}, Attempt ${retries}): ${e.message}`);
           }
           Utilities.sleep(1000 * retries);
         }
@@ -119,9 +112,6 @@ function traiterCommandesNoest() {
           const response = UrlFetchApp.fetch(CONFIG.API_URL_DELETE, options);
           const result = JSON.parse(response.getContentText());
           
-          // Log the API response
-          Logger.log(`Delete Order (Row ${i + 2}, Tracking ${tracking}): Success=${result.success}, Message=${result.message || JSON.stringify(result)}`);
-          
           if (result.success) {
             updates[i][0] = ''; // Clear U
             updates[i][1] = ''; // Clear V
@@ -134,7 +124,6 @@ function traiterCommandesNoest() {
           retries++;
           if (retries === MAX_RETRIES) {
             updates[i][1] = `Erreur réseau après ${retries} tentatives: ${e.message}`;
-            Logger.log(`Delete Order Error (Row ${i + 2}, Attempt ${retries}, Tracking ${tracking}): ${e.message}`);
           }
           Utilities.sleep(1000 * retries);
         }
