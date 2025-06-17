@@ -1,0 +1,151 @@
+const CONFIG = {
+  API_URL_CREATE: 'https://app.noest-dz.com/api/public/create/order',
+  API_URL_DELETE: 'https://app.noest-dz.com/api/public/delete/order',
+  WILAYA_ID: 19,
+  STATION_CODE: '19A',
+  COMMUNE: 'Sétif',
+  ADRESSE: 'Sétif'
+};
+
+const MAX_EXECUTION_TIME = 5 * 60 * 1000; // 5 minutes
+const MAX_RETRIES = 3;
+
+function traiterCommandesNoest() {
+  // Retrieve API_TOKEN and USER_GUID from Script Properties
+  const properties = PropertiesService.getScriptProperties();
+  const API_TOKEN = properties.getProperty('API_TOKEN');
+  const USER_GUID = properties.getProperty('USER_GUID');
+
+  // Check for missing properties
+  if (!API_TOKEN || !USER_GUID) {
+    Logger.log('Erreur: API_TOKEN ou USER_GUID manquant dans les propriétés du script.');
+    return;
+  }
+
+  const feuille = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Suivie');
+  const lastRow = feuille.getLastRow();
+  if (lastRow < 2) {
+    Logger.log('Aucune donnée à traiter.');
+    return;
+  }
+
+  // Fetch only required columns (C, G, H, U, V)
+  const donnees = feuille.getRange(2, 3, lastRow - 1, 20).getValues();
+  const updates = donnees.map(row => ['', row[20]]); // Initialize updates array for U (status) and V (tracking)
+  const startTime = new Date();
+
+  const baseOptions = {
+    method: 'post',
+    contentType: 'application/json',
+    muteHttpExceptions: true
+  };
+
+  for (let i = 0; i < donnees.length; i++) {
+    if (new Date() - startTime > MAX_EXECUTION_TIME) {
+      Logger.log(`Arrêté à la ligne ${i + 2} en raison de la limite de temps`);
+      break;
+    }
+
+    const ligne = donnees[i];
+    const statut = ligne[18]; // Colonne U (index 18 in 0-based donnees)
+    const tracking = ligne[19]; // Colonne V (index 19 in 0-based donnees)
+
+    if (tracking && statut !== 'Delete') continue;
+
+    if (statut === 'Tester') {
+      const nomPrenom = ligne[0]; // Colonne C
+      const telephone = (ligne[4] + '').replace(/\s/g, ''); // Colonne G
+      const produit = ligne[5]; // Colonne H
+      const telFormate = telephone.startsWith('0') ? telephone : '0' + telephone;
+
+      const payload = {
+        api_token: API_TOKEN,
+        user_guid: USER_GUID,
+        reference: 'XXXXXX',
+        client: nomPrenom,
+        phone: telFormate,
+        adresse: CONFIG.ADRESSE,
+        wilaya_id: CONFIG.WILAYA_ID,
+        commune: CONFIG.COMMUNE,
+        montant: 0,
+        remarque: 'Test Num',
+        produit: produit,
+        type_id: 1,
+        poids: 1,
+        stop_desk: 1,
+        station_code: CONFIG.STATION_CODE,
+        stock: 0,
+        can_open: 1
+      };
+
+      let retries = 0;
+      while (retries < MAX_RETRIES) {
+        try {
+          const options = { ...baseOptions, payload: JSON.stringify(payload) };
+          const response = UrlFetchApp.fetch(CONFIG.API_URL_CREATE, options);
+          const result = JSON.parse(response.getContentText());
+          
+          // Log the API response
+          Logger.log(`Create Order (Row ${i + 2}): Success=${result.success}, Tracking=${result.tracking || 'N/A'}, Message=${result.message || JSON.stringify(result)}`);
+          
+          if (result.success) {
+            updates[i][1] = result.tracking; // V
+            updates[i][0] = ''; // Clear U
+            break;
+          } else {
+            updates[i][1] = result.message || JSON.stringify(result);
+            break;
+          }
+        } catch (e) {
+          retries++;
+          if (retries === MAX_RETRIES) {
+            updates[i][1] = `Erreur réseau après ${retries} tentatives: ${e.message}`;
+            Logger.log(`Create Order Error (Row ${i + 2}, Attempt ${retries}): ${e.message}`);
+          }
+          Utilities.sleep(1000 * retries);
+        }
+      }
+    } else if (statut === 'Delete' && tracking) {
+      const payload = {
+        api_token: API_TOKEN,
+        user_guid: USER_GUID,
+        tracking: tracking
+      };
+
+      let retries = 0;
+      while (retries < MAX_RETRIES) {
+        try {
+          const options = { ...baseOptions, payload: JSON.stringify(payload) };
+          const response = UrlFetchApp.fetch(CONFIG.API_URL_DELETE, options);
+          const result = JSON.parse(response.getContentText());
+          
+          // Log the API response
+          Logger.log(`Delete Order (Row ${i + 2}, Tracking ${tracking}): Success=${result.success}, Message=${result.message || JSON.stringify(result)}`);
+          
+          if (result.success) {
+            updates[i][0] = ''; // Clear U
+            updates[i][1] = ''; // Clear V
+            break;
+          } else {
+            updates[i][1] = 'Erreur suppression';
+            break;
+          }
+        } catch (e) {
+          retries++;
+          if (retries === MAX_RETRIES) {
+            updates[i][1] = `Erreur réseau après ${retries} tentatives: ${e.message}`;
+            Logger.log(`Delete Order Error (Row ${i + 2}, Attempt ${retries}, Tracking ${tracking}): ${e.message}`);
+          }
+          Utilities.sleep(1000 * retries);
+        }
+      }
+    } else if (statut === 'Delete' && !tracking) {
+      updates[i][1] = 'Aucun tracking';
+    }
+  }
+
+  // Batch update the sheet
+  if (updates.length > 0) {
+    feuille.getRange(2, 21, updates.length, 2).setValues(updates);
+  }
+}
