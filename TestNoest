@@ -29,7 +29,9 @@ function traiterCommandesNoest() {
 
   // Fetch only required columns (C, G, H, U, V)
   const donnees = feuille.getRange(2, 3, lastRow - 1, 20).getValues();
-  const updates = donnees.map(row => ['', row[20]]); // Initialize updates array for U (status) and V (tracking)
+  // Initialize updates array with existing U (status) and V (tracking)
+  const updates = donnees.map(row => [row[18], row[19]]); // U: ligne[18], V: ligne[19]
+  const modifiedRows = new Set(); // Track rows that are modified
   const startTime = new Date();
 
   const baseOptions = {
@@ -83,17 +85,20 @@ function traiterCommandesNoest() {
           const result = JSON.parse(response.getContentText());
           
           if (result.success) {
-            updates[i][1] = result.tracking; // V
-            updates[i][0] = ''; // Clear U
+            updates[i][1] = result.tracking; // V (Column V)
+            // Do not modify U (Column U), keep 'Tester'
+            modifiedRows.add(i);
             break;
           } else {
             updates[i][1] = result.message || JSON.stringify(result);
+            modifiedRows.add(i);
             break;
           }
         } catch (e) {
           retries++;
           if (retries === MAX_RETRIES) {
             updates[i][1] = `Erreur réseau après ${retries} tentatives: ${e.message}`;
+            modifiedRows.add(i);
           }
           Utilities.sleep(1000 * retries);
         }
@@ -113,28 +118,51 @@ function traiterCommandesNoest() {
           const result = JSON.parse(response.getContentText());
           
           if (result.success) {
-            updates[i][0] = ''; // Clear U
-            updates[i][1] = ''; // Clear V
+            updates[i][0] = ''; // Clear U (remove 'Delete')
+            updates[i][1] = ''; // Clear V (remove tracking)
+            modifiedRows.add(i);
             break;
           } else {
             updates[i][1] = 'Erreur suppression';
+            modifiedRows.add(i);
             break;
           }
         } catch (e) {
           retries++;
           if (retries === MAX_RETRIES) {
             updates[i][1] = `Erreur réseau après ${retries} tentatives: ${e.message}`;
+            modifiedRows.add(i);
           }
           Utilities.sleep(1000 * retries);
         }
       }
     } else if (statut === 'Delete' && !tracking) {
       updates[i][1] = 'Aucun tracking';
+      modifiedRows.add(i);
     }
   }
 
-  // Batch update the sheet
-  if (updates.length > 0) {
-    feuille.getRange(2, 21, updates.length, 2).setValues(updates);
+  // Batch update only modified rows
+  if (modifiedRows.size > 0) {
+    const sortedRows = Array.from(modifiedRows).sort((a, b) => a - b);
+    const ranges = [];
+    let startIdx = sortedRows[0];
+    let currentRange = [updates[startIdx]];
+
+    for (let i = 1; i < sortedRows.length; i++) {
+      const idx = sortedRows[i];
+      if (idx === startIdx + currentRange.length) {
+        currentRange.push(updates[idx]);
+      } else {
+        ranges.push({ start: startIdx, data: currentRange });
+        startIdx = idx;
+        currentRange = [updates[idx]];
+      }
+    }
+    ranges.push({ start: startIdx, data: currentRange });
+
+    ranges.forEach(range => {
+      feuille.getRange(2 + range.start, 21, range.data.length, 2).setValues(range.data);
+    });
   }
 }
