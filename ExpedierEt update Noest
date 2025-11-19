@@ -9,58 +9,74 @@
   const feuilleNomNoest = "Noest Sheet"; // Sheet for Noest order details
 
   // ✅ Function: Appends numbered notes to a cell with incrementing counters
-  function appendNumberedNote(cell, text) {
-    // Validate input cell
-    if (!cell || typeof cell.getNote !== 'function') {
-      Logger.log(`Erreur dans appendNumberedNote: Cellule invalide`);
-      return;
-    }
-
-    const existingNote = cell.getNote() || "";
-    const cleanText = text.trim();
-    const lines = existingNote.split("\n").filter(line => line.trim());
-    const noteCounts = {};
-    const cleanedLines = [];
-
-    // Parse existing notes to count occurrences
-    for (let line of lines) {
-      const match = line.match(/^(\d+)\.\s+(.+?)(?:\s+\((\d+)\))?$/);
-      if (match) {
-        const [, num, noteText, count] = match;
-        const key = noteText.trim();
-        noteCounts[key] = noteCounts[key] || { count: 0, number: num };
-        if (count) {
-          noteCounts[key].count = Math.max(noteCounts[key].count, parseInt(count));
-        }
-        cleanedLines.push({ text: noteText.trim(), number: num, count: parseInt(count) || 0 });
-      }
-    }
-
-    // Check if the note exists
-    const existingNoteKey = cleanText;
-    if (noteCounts[existingNoteKey]) {
-      // Increment count for existing note
-      noteCounts[existingNoteKey].count++;
-      const existingNumber = noteCounts[existingNoteKey].number;
-
-      // Update or replace the note with new count
-      const updatedLine = `${existingNumber}. ${cleanText} (${noteCounts[existingNoteKey].count})`;
-      const existingIndex = lines.findIndex(line => line.match(/^(\d+)\.\s+(.+?)(?:\s+\(\d+\))?$/)[2]?.trim() === cleanText);
-      if (existingIndex !== -1) {
-        lines[existingIndex] = updatedLine;
-      } else {
-        lines.push(updatedLine);
-      }
-    } else {
-      // New note: assign next number, count = 1
-      const nextNumber = lines.length ? Math.max(...lines.map(line => parseInt(line.match(/^(\d+)/)[1]))) + 1 : 1;
-      noteCounts[cleanText] = { count: 1, number: nextNumber };
-      lines.push(`${nextNumber}. ${cleanText} (1)`);
-    }
-
-    // Update cell with sorted numbered notes
-    cell.setNote(lines.sort((a, b) => parseInt(a.match(/^(\d+)/)[1]) - parseInt(b.match(/^(\d+)/)[1])).join("\n"));
+function appendNumberedNote(cell, text) {
+  // Validate input cell
+  if (!cell || typeof cell.getNote !== 'function') {
+    Logger.log(`Erreur dans appendNumberedNote: Cellule invalide`);
+    return;
   }
+
+  const existingNote = cell.getNote() || "";
+  const cleanText = text.trim();
+  const lines = existingNote.split("\n").filter(line => line.trim());
+  const noteCounts = {};
+  const cleanedLines = [];
+
+  // Parse existing notes to count occurrences
+  for (let line of lines) {
+    // Handle empty notes gracefully
+    if (!line.trim()) {
+      Logger.log(`Note vide ignorée: "${line}"`);
+      continue;
+    }
+    const match = line.match(/^(\d+)\.\s+(.+?)(?:\s+\((\d+)\))?$/);
+    if (match) {
+      const [, num, noteText, count] = match;
+      const key = noteText.trim();
+      noteCounts[key] = noteCounts[key] || { count: 0, number: num };
+      if (count) {
+        noteCounts[key].count = Math.max(noteCounts[key].count, parseInt(count));
+      }
+      cleanedLines.push({ text: noteText.trim(), number: num, count: parseInt(count) || 0 });
+    } else {
+      // Log malformed note and treat as new note
+      Logger.log(`Note malformée détectée: "${line}". Traitée comme nouvelle note.`);
+      const key = line.trim();
+      noteCounts[key] = noteCounts[key] || { count: 0, number: null };
+      cleanedLines.push({ text: key, number: null, count: 0 });
+    }
+  }
+
+  // Check if the note exists
+  const existingNoteKey = cleanText;
+  if (noteCounts[existingNoteKey]) {
+    // Increment count for existing note
+    noteCounts[existingNoteKey].count++;
+    const existingNumber = noteCounts[existingNoteKey].number || 
+                          (lines.length ? Math.max(...lines.filter(line => line.match(/^(\d+)/)).map(line => parseInt(line.match(/^(\d+)/)[1]))) + 1 : 1);
+
+    // Update or replace the note with new count
+    const updatedLine = `${existingNumber}. ${cleanText} (${noteCounts[existingNoteKey].count})`;
+    const existingIndex = cleanedLines.findIndex(item => item.text === cleanText);
+    if (existingIndex !== -1) {
+      lines[existingIndex] = updatedLine;
+    } else {
+      lines.push(updatedLine);
+    }
+  } else {
+    // New note: assign next number, count = 1
+    const nextNumber = lines.length ? Math.max(...lines.filter(line => line.match(/^(\d+)/)).map(line => parseInt(line.match(/^(\d+)/)[1]))) + 1 : 1;
+    noteCounts[cleanText] = { count: 1, number: nextNumber };
+    lines.push(`${nextNumber}. ${cleanText} (1)`);
+  }
+
+  // Update cell with sorted numbered notes
+  cell.setNote(lines.sort((a, b) => {
+    const numA = parseInt(a.match(/^(\d+)/)?.[1] || 0);
+    const numB = parseInt(b.match(/^(\d+)/)?.[1] || 0);
+    return numA - numB;
+  }).join("\n"));
+}
 
   // ✅ Function: Creates new Noest orders and updates tracking statuses
   function expedierEtMettreAJourNoest() {
@@ -118,7 +134,7 @@
             const client = ligneNoest[1]; // Column B
             let phone = ligneNoest[2] ? ligneNoest[2].toString().trim() : ""; // Column C
             const phone2 = ligneNoest[3] ? ligneNoest[3].toString().trim() : ""; // Column D
-            const adresse = ligneNoest[4] ? ligneNoest[4].toString().trim() : ""; // Column E
+            const adresse = (ligneZr[6]?.toString().trim()) || (ligneZr[8]?.toString().trim()) || "";
             const wilayaId = ligneNoest[7]; // Column H
             const commune = ligneNoest[5]; // Column F
             const montant = ligneNoest[6]; // Column G
@@ -351,167 +367,240 @@
       Logger.log(errorMessage);
     }
   }
+// ✅ Function: Updates tracking statuses for existing NS orders
+function mettreAJourTousStatutsNoest() {
+  // Validate API credentials
+  if (!tokenNoest || !guidNoest) {
+    Logger.log(`Erreur: api_token ou user_guid manquant dans les propriétés du script`);
+    return;
+  }
 
-  // ✅✅✅✅✅✅✅✅✅✅✅✅ Function: Updates tracking statuses for existing NS orders
-  function mettreAJourTousStatutsNoest() {
-    // Validate API credentials
-    if (!tokenNoest || !guidNoest) {
-      Logger.log(`Erreur: api_token ou user_guid manquant dans les propriétés du script`);
-      return;
+  // Load Zr Sheet
+  const feuilleZr = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(feuilleNomZr);
+  
+  // Load Noest Sheet to check Column N (stop desk)
+  const feuilleNoest = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(feuilleNomNoest);
+  
+  // Validate sheets
+  if (!feuilleZr || !feuilleNoest) {
+    Logger.log(`Erreur: Feuille "${feuilleNomZr}" ou "${feuilleNomNoest}" introuvable`);
+    return;
+  }
+
+  // Get data from Zr Sheet and Noest Sheet
+  const donneesZr = feuilleZr.getDataRange().getValues();
+  const donneesNoest = feuilleNoest.getDataRange().getValues();
+  
+  // Validate sheet data
+  if (donneesZr.length < 2) {
+    Logger.log(`Erreur: Feuille Zr a trop peu de lignes`);
+    return;
+  }
+
+  // Create map of tracking to stop desk value (Column N) from Noest Sheet, assuming row alignment
+  const noestStopDeskMap = {};
+  for (let i = 1; i < donneesZr.length && i < donneesNoest.length; i++) {
+    const tracking = donneesZr[i][21]; // Zr Sheet Column V (tracking)
+    const stopDesk = donneesNoest[i][13]; // Noest Sheet Column N (stop desk)
+    if (tracking && tracking.toString().trim() !== "" && stopDesk !== undefined) {
+      const stopDeskValue = stopDesk.toString().toLowerCase();
+      noestStopDeskMap[tracking.toString().trim()] = stopDeskValue === "oui" || stopDeskValue === "yes" || stopDeskValue === "true";
     }
+  }
 
-    // Load Zr Sheet
-    const feuilleZr = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(feuilleNomZr);
-    if (!feuilleZr) {
-      Logger.log(`Erreur: Feuille "${feuilleNomZr}" introuvable`);
-      return;
+  // Collect NS tracking numbers (Column V, societe = "NS")
+  const trackings = [];
+  for (let i = 1; i < donneesZr.length; i++) {
+    if (!donneesZr[i] || !Array.isArray(donneesZr[i]) || donneesZr[i].length < 22) {
+      Logger.log(`Erreur: Ligne ${i + 1} dans Zr Sheet est invalide ou trop courte: ${JSON.stringify(donneesZr[i])}`);
+      continue;
     }
-
-    // Get data from Zr Sheet
-    const donneesZr = feuilleZr.getDataRange().getValues();
-    if (donneesZr.length < 2) {
-      Logger.log(`Erreur: Feuille Zr a trop peu de lignes`);
-      return;
+    const tracking = donneesZr[i][21]; // Column V
+    const societe = donneesZr[i][12]; // Column M
+    if (tracking && tracking.toString().trim() !== "" && societe === "NS") {
+      trackings.push(tracking.toString().trim());
+      Logger.log(`Collected tracking from Zr Sheet row ${i + 1}: ${tracking}`);
     }
+  }
 
-    // API endpoint for tracking
-    const urlTrackings = "https://app.noest-dz.com/api/public/get/trackings/info";
-    const trackings = [];
+  // Exit if no valid NS trackings
+  if (trackings.length === 0) {
+    Logger.log("Aucun tracking valide NS à mettre à jour.");
+    return;
+  }
 
-    // Collect NS tracking numbers (Column V, societe = "NS")
-    for (let i = 1; i < donneesZr.length; i++) {
-      const tracking = donneesZr[i][21]; // Column V
-      const societe = donneesZr[i][12]; // Column M
-      if (tracking && tracking.toString().trim() !== "" && societe === "NS") {
-        trackings.push(tracking.toString().trim());
+  // Prepare API request for tracking
+  const optionsTrack = {
+    method: "post",
+    contentType: "application/json",
+    payload: JSON.stringify({
+      api_token: tokenNoest,
+      user_guid: guidNoest,
+      trackings: trackings
+    }),
+    muteHttpExceptions: true
+  };
+
+  // Fetch and process tracking statuses
+  try {
+    const reponseTrack = UrlFetchApp.fetch("https://app.noest-dz.com/api/public/get/trackings/info", optionsTrack);
+    const statusCode = reponseTrack.getResponseCode();
+    const responseText = reponseTrack.getContentText();
+
+    if (statusCode >= 200 && statusCode < 300) {
+      let resultatTrack;
+      try {
+        resultatTrack = JSON.parse(responseText);
+        Logger.log(`Trackings reçus de l'API: ${JSON.stringify(Object.keys(resultatTrack))}`);
+      } catch (parseError) {
+        throw new Error(`Réponse API trackings non-JSON: ${responseText}`);
       }
-    }
 
-    // Exit if no valid NS trackings
-    if (trackings.length === 0) {
-      Logger.log("Aucun tracking valide NS à mettre à jour.");
-      return;
-    }
+      // Define error message overrides
+      const errorMessageOverrides = {
+        "Erreur: Aucune activité pour tracking": "Aucune Activité"
+      };
 
-    // Prepare API request for tracking
-    const optionsTrack = {
-      method: "post",
-      contentType: "application/json",
-      payload: JSON.stringify({
-        api_token: tokenNoest,
-        user_guid: guidNoest,
-        trackings: trackings
-      }),
-      muteHttpExceptions: true
-    };
-
-    // Fetch and process tracking statuses
-    try {
-      const reponseTrack = UrlFetchApp.fetch(urlTrackings, optionsTrack);
-      const statusCode = reponseTrack.getResponseCode();
-      const responseText = reponseTrack.getContentText();
-
-      if (statusCode >= 200 && statusCode < 300) {
-        let resultatTrack;
-        try {
-          resultatTrack = JSON.parse(responseText);
-          // Log full API response for inspection
-        Logger.log(`Réponse API complète: ${JSON.stringify(resultatTrack)}`);
-        } catch (parseError) {
-          throw new Error(`Réponse API trackings non-JSON: ${responseText}`);
-        }
-
-        // Define error message overrides
-        const errorMessageOverrides = {
-          "Erreur: Aucune activité pour tracking": "Aucun Activité"
-        };
-
-        // Update sheet for each NS tracking
-        for (let i = 1; i < donneesZr.length; i++) {
-          const tracking = donneesZr[i][21]; // Column V
-          const societe = donneesZr[i][12]; // Column M
-          if (!tracking || tracking.toString().trim() === "" || societe !== "NS") continue;
-
-          const cellQ = feuilleZr.getRange(i + 1, 17); // Column Q
-          if (resultatTrack[tracking] && resultatTrack[tracking].activity && resultatTrack[tracking].activity.length > 0) {
-            const latestEvent = resultatTrack[tracking].activity[resultatTrack[tracking].activity.length - 1].event;
-            const clientNomAPI = resultatTrack[tracking].OrderInfo.client || "";
-            const clientNomFeuille = donneesZr[i][1]; // Zr Sheet Column B
-            const clientMatch = clientNomAPI.trim() === clientNomFeuille.toString().trim();
-            const statusNote = `${latestEvent} (Client ${clientMatch ? "✓" : "✗"})`;
-
-            // Map API status to sheet status (Column O)
-            const statusMapping = {
-              "Validé": "En dispatche",
-              "Uploadé sur le système": "En Preparation",
-              "Colis Ramassé": "En dispatche",
-              "Reception validé": "En Preparation",
-              "Enlevé par le livreur": "Au Bureau",
-              "Nouvelle tentative demandée par le vendeur": "Autre",
-              "Retour demandé par le partenaire": "Suspendu",
-              "Retour En transit": "Suspendu",
-              "Retour transmis au partenaire": "ANNULER",
-              "Pick-UP transmis au partenaire": "Pick-UP",
-              "Transmission du retour au partenaire annulée": "Autre",
-              "Retour reçu par le partenaire": "ANNULER",
-              "Retour validé par le partenaire": "ANNULER",
-              "Retour remis en livraison": "Autre",
-              "Retour transmis vers entrepôt": "Autre",
-              "Pick-Up collecté": "Pick-UP",
-              "Pick-Up validé": "Pick-UP",
-              "Pick-Up reçu par le partenaire": "Pick-UP",
-              "Suspendu": "Suspendu",
-              "Livré": "LIVRE",
-              "Montant transmis au partenaire": "LIVRE",
-              "Versement annulé": "Autre",
-              "Montant reçu par le partenaire": "LIVRE",
-              "Échange validé": "Echange",
-              "Demande de suppression": "Autre",
-              "Informations modifiées": "Autre",
-              "Prix modifié": "Autre",
-              "Changement de wilaya": "Autre",
-              "Surfacturation du colis": "Autre",
-              "Tentative de livraison": "Contacté"
-            };
-
-            const declencheurValue = statusMapping[latestEvent] || latestEvent;
-            feuilleZr.getRange(i + 1, 15).setValue(declencheurValue); // Column O
-            cellQ.setValue(latestEvent);
-            appendNumberedNote(cellQ, statusNote);
-          } else {
-            const defaultError = `Erreur: Aucune activité pour tracking ${tracking}`;
-            const errorMessage = errorMessageOverrides["Erreur: Aucune activité pour tracking"] || defaultError;
-            cellQ.setValue(errorMessage);
-            appendNumberedNote(cellQ, errorMessage);
-            Logger.log(`${errorMessage}, ligne ${i + 1}`);
-          }
-        }
-      } else {
-        // Handle API errors for all NS trackings
-        const errorMessage = `Erreur API trackings (statut ${statusCode}): ${responseText}`;
-        for (let i = 1; i < donneesZr.length; i++) {
-          const tracking = donneesZr[i][21]; // Column V
-          const societe = donneesZr[i][12]; // Column M
-          if (tracking && societe === "NS") {
-            const cellQ = feuilleZr.getRange(i + 1, 17);
-            cellQ.setValue(errorMessage);
-            appendNumberedNote(cellQ, errorMessage);
-          }
-        }
-        Logger.log(errorMessage);
-      }
-    } catch (e) {
-      // Handle general errors for all NS trackings
-      const errorMessage = `Erreur dans mettreAJourTousStatutsNoest: ${e.message}`;
+      // Update sheet for each NS tracking
       for (let i = 1; i < donneesZr.length; i++) {
+        // Validate row before processing
+        if (!donneesZr[i] || !Array.isArray(donneesZr[i]) || donneesZr[i].length < 22) {
+          Logger.log(`Erreur: Ligne ${i + 1} dans Zr Sheet est invalide ou manque de colonnes (besoin d'au moins 22 colonnes): ${JSON.stringify(donneesZr[i])}`);
+          const cellQ = feuilleZr.getRange(i + 1, 17); // Column Q
+          const errorMessage = `Erreur: Ligne ${i + 1} invalide ou manque de colonnes`;
+          cellQ.setValue(errorMessage);
+          appendNumberedNote(cellQ, errorMessage);
+          continue;
+        }
+
+        const tracking = donneesZr[i][21]; // Column V
+        const societe = donneesZr[i][12]; // Column M
+        // Debug row 68 specifically
+        if (i + 1 === 68) {
+          Logger.log(`Debug row 68: tracking=${tracking}, societe=${societe}, donneesZr[${i}]=${JSON.stringify(donneesZr[i])}`);
+        }
+        if (!tracking || tracking.toString().trim() === "" || societe !== "NS") {
+          continue;
+        }
+
+        const cellQ = feuilleZr.getRange(i + 1, 17); // Column Q
+        if (resultatTrack[tracking] && resultatTrack[tracking].activity && resultatTrack[tracking].activity.length > 0) {
+          const latestEvent = resultatTrack[tracking].activity[resultatTrack[tracking].activity.length - 1].event;
+          const content = resultatTrack[tracking].activity[resultatTrack[tracking].activity.length - 1].content || "";
+          const clientNomAPI = resultatTrack[tracking].OrderInfo.client || "";
+          const clientNomFeuille = donneesZr[i][1] ? donneesZr[i][1].toString().trim() : ""; // Zr Sheet Column B
+          const clientMatch = clientNomAPI.trim() === clientNomFeuille;
+
+          // Log details for problematic order
+          if (tracking === "LHA-19D-09816508") {
+            Logger.log(`Processing problematic order, row ${i + 1}, tracking=${tracking}, clientNomAPI=${clientNomAPI}, clientNomFeuille=${clientNomFeuille}, clientMatch=${clientMatch}`);
+          }
+
+          // Get stop desk status from noestStopDeskMap using tracking
+          const isStopDesk = noestStopDeskMap[tracking] === true;
+          if (!noestStopDeskMap.hasOwnProperty(tracking)) {
+            const errorMessage = `Erreur: Tracking ${tracking} non trouvé dans noestStopDeskMap (Zr Sheet row ${i + 1})`;
+            cellQ.setValue(errorMessage);
+            appendNumberedNote(cellQ, errorMessage);
+            Logger.log(errorMessage);
+            continue;
+          }
+
+          // Include content in note only for Tentative de livraison
+          const statusNote = latestEvent === "Tentative de livraison" 
+            ? `${latestEvent} (Client ${clientMatch ? "✓" : "✗"})${content ? ` (${content})` : ""}`
+            : `${latestEvent} (Client ${clientMatch ? "✓" : "✗"})`;
+
+          // Map API status to sheet status (Column O) with content-based logic for Tentative de livraison
+          const statusMapping = {
+            "Validé": "En dispatche",
+            "Uploadé sur le système": "En Preparation",
+            "Colis Ramassé": "En dispatche",
+            "Reception validé": "En Preparation",
+            "Enlevé par le livreur": "Au Bureau",
+            "Nouvelle tentative demandée par le vendeur": "Autre",
+            "Retour demandé par le partenaire": "Suspendu",
+            "Retour En transit": "ANNULER",
+            "Retour transmis au partenaire": "ANNULER",
+            "Pick-UP transmis au partenaire": "Pick-UP",
+            "Transmission du retour au partenaire annulée": "Autre",
+            "Retour reçu par le partenaire": "ANNULER",
+            "Retour validé par le partenaire": "ANNULER",
+            "Retour remis en livraison": "Autre",
+            "Retour transmis vers entrepôt": "Autre",
+            "Pick-Up collecté": "Pick-UP",
+            "Pick-Up validé": "Pick-UP",
+            "Pick-Up reçu par le partenaire": "Pick-UP",
+            "Suspendu": "Suspendu",
+            "Livré": "LIVRE",
+            "Montant transmis au partenaire": "LIVRE",
+            "Versement annulé": "Autre",
+            "Montant reçu par le partenaire": "LIVRE",
+            "Échange validé": "Echange",
+            "Demande de suppression": "Autre",
+            "Informations modifiées": content.toLowerCase().includes("sus") ? "Suspendu" : "Autre",
+            "Prix modifié": "Autre",
+            "Changement de wilaya": "Autre",
+            "Surfacturation du colis": "Autre",
+            "En livraison": "En livraison",
+            "Tentative de livraison": isStopDesk ? (
+              content === "Client contacté" ? "Contacté" :
+              content === "Sms Envoyé" ? "Contacté sms" :
+              content === "ligne occupée" ? "Occupé" :
+              content === "occupé" ? "Occupé" :
+              content === "Client ne répond pas" ? "SANS REPONSE" :
+              content === "Client injoignable" ? "Injoignable" :
+              content === "Refusé (sans motif)" ? "Suspendu" :
+              content.includes("Client demande de reporter la livraison") ? "REPORTER" :
+              content.includes("Changer le Prix") ? "Prix Modifié" :
+              content === "aujourd'hui" ? "Programmé" : "Autre"
+            ) : (
+              content === "Client contacté" ? "Contacté Livreur" :
+              content === "Client ne répond pas" ? "SANS REPONSE" :
+              content === "Refusé (sans motif)" ? "Suspendu" :
+              content === "Client injoignable" ? "Injoignable" :
+              content === "Client absent" ? "Absent" :
+              content.includes("reporter") ? "REPORTER" :
+              content.includes("Changer le Prix") ? "Prix Modifié" :
+              content === "aujourd'hui" ? "Programmé" : "Autre"
+            )
+          };
+
+          const declencheurValue = statusMapping[latestEvent] || latestEvent;
+          feuilleZr.getRange(i + 1, 15).setValue(declencheurValue); // Column O
+          cellQ.setValue(latestEvent);
+          appendNumberedNote(cellQ, statusNote);
+          Logger.log(`Updated Zr Sheet row ${i + 1}, tracking=${tracking}, declencheur=${declencheurValue}, note=${statusNote}`);
+        } else {
+          const defaultError = `Erreur: Aucune activité pour tracking ${tracking}`;
+          const errorMessage = errorMessageOverrides["Erreur: Aucune activité pour tracking"] || defaultError;
+          cellQ.setValue(errorMessage);
+          appendNumberedNote(cellQ, errorMessage);
+          Logger.log(`${errorMessage}, ligne ${i + 1}`);
+        }
+      } // End for loop
+    } else {
+      // Handle API errors for all NS trackings
+      const errorMessage = `Erreur API trackings (statut ${statusCode}): ${responseText}`;
+      for (let i = 1; i < donneesZr.length; i++) {
+        if (!donneesZr[i] || !Array.isArray(donneesZr[i]) || donneesZr[i].length < 22) {
+          Logger.log(`Erreur: Ligne ${i + 1} dans Zr Sheet est invalide ou trop courte: ${JSON.stringify(donneesZr[i])}`);
+          continue;
+        }
         const tracking = donneesZr[i][21]; // Column V
         const societe = donneesZr[i][12]; // Column M
         if (tracking && societe === "NS") {
           const cellQ = feuilleZr.getRange(i + 1, 17);
           cellQ.setValue(errorMessage);
           appendNumberedNote(cellQ, errorMessage);
+          Logger.log(`API error for Zr Sheet row ${i + 1}, tracking=${tracking}: ${errorMessage}`);
         }
       }
       Logger.log(errorMessage);
-    }
-  }
+    } // End if (statusCode)
+  } catch (e) {
+    // Log general error without reprocessing rows
+    const errorMessage = `Erreur dans mettreAJourTousStatutsNoest: ${e.message}`;
+    Logger.log(errorMessage);
+  } // End try
+}
