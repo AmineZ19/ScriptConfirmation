@@ -1,0 +1,240 @@
+function fetchAndProcessAllData() {
+  const sheetName = 'Zr Sheet';
+  const tarifSheetName = 'Tarif Livraison';
+
+  const societeColumn = 13; // M
+  const wilayaColumn = 8;   // H
+  const deliveryTypeColumn = 14; // N
+  const trackingColumn = 22; // V
+  const situationColumn = 15; // O
+
+  const totalColumn = 24;    // X
+  const tarifColumn = 25;    // Y
+  const differenceColumn = 26; // Z
+
+  const scriptProperties = PropertiesService.getScriptProperties();
+  const tokenZR = scriptProperties.getProperty('TOKEN_ZR');
+  const keyZR = scriptProperties.getProperty('KEY_ZR');
+  const tokenNS = scriptProperties.getProperty('TOKEN_NOEST');
+  const keyNS = scriptProperties.getProperty('GUID_NOEST');
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(sheetName);
+  const tarifSheet = ss.getSheetByName(tarifSheetName);
+  const lastRow = sheet.getLastRow();
+
+  if (lastRow < 2) {
+    Logger.log('No data rows found.');
+    return;
+  }
+  
+  const tarifMap = buildTarifMap(tarifSheet);
+
+  const zrTrackings = [];
+  const nsTrackings = [];
+  const rowMapZR = {};
+  const rowMapNS = {};
+
+  for (let row = 2; row <= lastRow; row++) {
+    const societe = sheet.getRange(row, societeColumn).getValue();
+    const trackingCell = sheet.getRange(row, trackingColumn);
+    const tracking = trackingCell.getValue();
+    const situation = sheet.getRange(row, situationColumn).getValue();
+
+    if (tracking && tracking.toString().trim() !== '') {
+      const trackStr = tracking.toString().trim();
+
+      if (societe === 'ZR') {
+        rowMapZR[trackStr] = { row: row, situation: situation };
+        zrTrackings.push(trackStr);
+      } else if (societe === 'NS') {
+        rowMapNS[trackStr] = { row: row, situation: situation };
+        nsTrackings.push(trackStr);
+      }
+    }
+  }
+
+  // Process ZR trackings
+  let totalZR = 0;
+  if (zrTrackings.length > 0) {
+    const resZR = processZRTrackings(zrTrackings, rowMapZR, tokenZR, keyZR, sheet, totalColumn, tarifColumn, differenceColumn);
+    totalZR = resZR.totalSold;
+  }
+  
+  // Process NS trackings
+  let totalNS = 0;
+  if (nsTrackings.length > 0) {
+    const resNS = processNSTrackings(nsTrackings, rowMapNS, tokenNS, keyNS, sheet, tarifMap, wilayaColumn, deliveryTypeColumn, totalColumn, tarifColumn, differenceColumn);
+    totalNS = resNS.totalSold;
+  }
+  
+  // Show dialog with totals summary
+  const ui = SpreadsheetApp.getUi();
+  ui.alert('Summary', 
+    'Total Sold ZR: ' + totalZR.toFixed(2) + '\n' +
+    'Total Sold NOEST: ' + totalNS.toFixed(2), 
+    ui.ButtonSet.OK);
+}
+
+// Updated ZR processing with situation logic and accumulating totalSold
+function processZRTrackings(zrTrackings, rowMap, token, key, sheet, totalCol, tarifCol, diffCol) {
+  let totalSold = 0;
+  
+  if (!token || !key) {
+    Logger.log('TOKEN_ZR or KEY_ZR missing.');
+    return { totalSold };
+  }
+  
+  const url = 'https://procolis.com/api_v1/lire';
+  const payload = { "Colis": zrTrackings.map(tracking => ({ "Tracking": tracking })) };
+  
+  const options = {
+    method: 'post',
+    contentType: 'application/json',
+    headers: {'token': token, 'key': key},
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  };
+
+  try {
+    const response = UrlFetchApp.fetch(url, options);
+    if (response.getResponseCode() === 200) {
+      const resJson = JSON.parse(response.getContentText());
+      const colisList = resJson.Colis || [];
+      const dataMap = {};
+      colisList.forEach(c => { dataMap[c.Tracking] = c; });
+
+      zrTrackings.forEach(tracking => {
+        const rowInfo = rowMap[tracking];
+        const row = rowInfo.row;
+        const situation = rowInfo.situation ? rowInfo.situation.toString().trim().toUpperCase() : '';
+        
+        if (situation === 'LIVRE') {
+          const data = dataMap[tracking];
+          const total = data ? (data.Total || 0) : 0;
+          const tarif = data ? (data.Tarif_Livrée || 0) : 0;
+          const diff = total - tarif;
+
+          sheet.getRange(row, totalCol).setValue(total);
+          sheet.getRange(row, tarifCol).setValue(tarif);
+          sheet.getRange(row, diffCol).setValue(diff);
+          
+          totalSold += diff;
+
+          Logger.log(`ZR Row ${row}: LIVRE, Tracking=${tracking}, Total=${total}, Tarif=${tarif}, Diff=${diff}`);
+        } else if (situation === 'ANNULER') {
+          sheet.getRange(row, totalCol).setValue(-200);
+          sheet.getRange(row, tarifCol).clearContent();
+          sheet.getRange(row, diffCol).clearContent();
+
+          Logger.log(`ZR Row ${row}: ANNULER, Tracking=${tracking} set Total to -200`);
+        } else {
+          Logger.log(`ZR Row ${row}: Situation=${situation}, skipping calculation.`);
+        }
+      });
+    } else {
+      Logger.log(`ZR API failed with code ${response.getResponseCode()}: ${response.getContentText()}`);
+    }
+  } catch(e) {
+    Logger.log(`Error fetching ZR data: ${e.toString()}`);
+  }
+
+  return { totalSold };
+}
+
+// Updated NS processing with situation logic and accumulating totalSold
+function processNSTrackings(nsTrackings, rowMap, token, key, sheet, tarifMap, wilayaCol, deliveryCol, totalCol, tarifCol, diffCol) {
+  let totalSold = 0;
+  
+  if (!token || !key) {
+    Logger.log('TOKEN_NOEST or GUID_NOEST missing.');
+    return { totalSold };
+  }
+  
+  const url = 'https://app.noest-dz.com/api/public/get/trackings/info';
+  const payload = {
+    api_token: token,
+    user_guid: key,
+    trackings: nsTrackings
+  };
+  const options = {
+    method: 'post',
+    contentType: 'application/json',
+    headers: {'Accept': 'application/json'},
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  };
+  try {
+    const response = UrlFetchApp.fetch(url, options);
+    if (response.getResponseCode() === 200) {
+      const resJson = JSON.parse(response.getContentText());
+      nsTrackings.forEach(tracking => {
+        const rowInfo = rowMap[tracking];
+        const row = rowInfo.row;
+        const situation = rowInfo.situation ? rowInfo.situation.toString().trim().toUpperCase() : '';
+
+        if (!resJson[tracking] || !resJson[tracking].OrderInfo) {
+          Logger.log(`NS No data for tracking ${tracking}`);
+          return;
+        }
+
+        if (situation === 'LIVRE') {
+          const orderInfo = resJson[tracking].OrderInfo;
+          const total = orderInfo.montant ? parseFloat(orderInfo.montant) : 0;
+          const wilayaName = sheet.getRange(row, wilayaCol).getValue();
+          const deliveryTypeValue = sheet.getRange(row, deliveryCol).getValue();
+          const isStopDesk = (typeof deliveryTypeValue === 'string' && deliveryTypeValue.trim().toUpperCase() === 'OUI');
+          let tarif = 'Check Wilaya';
+          if (tarifMap[wilayaName]) {
+            tarif = isStopDesk ? tarifMap[wilayaName].stopDesk : tarifMap[wilayaName].domicile;
+          }
+          let tarifNum = 0;
+          if (typeof tarif === 'number') {
+            tarifNum = tarif;
+          } else if (tarif !== 'Check Wilaya') {
+            tarifNum = parseFloat(tarif) || 0;
+          }
+          sheet.getRange(row, totalCol).setValue(total);
+          sheet.getRange(row, tarifCol).setValue(tarif);
+          sheet.getRange(row, diffCol).setValue(total - tarifNum);
+          
+          totalSold += total - tarifNum;
+
+          Logger.log(`NS Row ${row}: LIVRE, Tracking=${tracking}, Total=${total}, Tarif=${tarif}, Diff=${total - tarifNum}`);
+        } else if (situation === 'ANNULER') {
+          sheet.getRange(row, totalCol).setValue(0);
+          sheet.getRange(row, tarifCol).setValue(0);
+          sheet.getRange(row, diffCol).setValue(0);
+
+          Logger.log(`NS Row ${row}: ANNULER, Tracking=${tracking} set all to 0`);
+        } else {
+          Logger.log(`NS Row ${row}: Situation=${situation}, skipping calculation.`);
+        }
+      });
+    } else {
+      Logger.log(`NS API failed with code ${response.getResponseCode()}: ${response.getContentText()}`);
+    }
+  } catch(e) {
+    Logger.log(`Error fetching NS data: ${e.toString()}`);
+  }
+  
+  return { totalSold };
+}
+function buildTarifMap(tarifSheet) {
+  const tarifMap = {};
+  const lastRow = tarifSheet.getLastRow();
+  
+  for (let row = 2; row <= lastRow; row++) {
+    const wilayaName = tarifSheet.getRange(row, 2).getValue();  // Column B
+    const domicileTarif = tarifSheet.getRange(row, 3).getValue(); // Column C
+    const stopDeskTarif = tarifSheet.getRange(row, 4).getValue(); // Column D
+    
+    if (wilayaName) {
+      tarifMap[wilayaName] = { domicile: domicileTarif, stopDesk: stopDeskTarif };
+    }
+  }
+  
+  Logger.log('Tarif map built with ' + Object.keys(tarifMap).length + ' wilayas');
+  return tarifMap;
+}
+
